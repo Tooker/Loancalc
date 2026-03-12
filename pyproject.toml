@@ -1,0 +1,9 @@
+[project]
+name = "loancalc"
+version = "0.1.0"
+description = "Kreditrechner mit Sonderzahlungen und Polars-Auswertung"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "polars>=1.33.1",
+]
