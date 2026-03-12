@@ -15,6 +15,7 @@ Falls kein Netzwerk verfuegbar ist, sind `polars` und `streamlit` lokal noch nic
 ```bash
 uv run hello.py
 uv run streamlit run app.py
+uv run drklein_example.py
 ```
 
 ## Was die Klasse kann
@@ -29,6 +30,7 @@ uv run streamlit run app.py
 - Mehrere parallele Kredite mit gemeinsamer Gesamttabelle
 - Streamlit-App fuer interaktive Eingabe, Tabellen und Diagramme
 - Laden und Speichern der Eingaben per YAML-Datei
+- API-Client fuer Zinsabfragen ueber feste Laufzeiten
 
 ## Noch sinnvolle Felder
 
