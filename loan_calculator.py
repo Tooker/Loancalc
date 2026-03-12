@@ -26,7 +26,8 @@ class LoanCalculator:
     name: str
     principal_eur: Decimal | int | float | str
     annual_interest_percent: Decimal | int | float | str
-    annual_repayment_percent: Decimal | int | float | str
+    annual_repayment_percent: Decimal | int | float | str = 0
+    monthly_payment_amount_eur: Decimal | int | float | str = 0
     interest_only_months: int = 0
     annual_special_payment_percent: Decimal | int | float | str = 0
     _special_payments: dict[int, Decimal] = field(default_factory=dict, init=False)
@@ -35,6 +36,7 @@ class LoanCalculator:
         self.principal_eur = _to_decimal(self.principal_eur)
         self.annual_interest_percent = _to_decimal(self.annual_interest_percent)
         self.annual_repayment_percent = _to_decimal(self.annual_repayment_percent)
+        self.monthly_payment_amount_eur = _to_decimal(self.monthly_payment_amount_eur)
         self.annual_special_payment_percent = _to_decimal(self.annual_special_payment_percent)
 
         if self.principal_eur <= 0:
@@ -43,11 +45,15 @@ class LoanCalculator:
             raise ValueError("Der Kreditzins darf nicht negativ sein.")
         if self.annual_repayment_percent < 0:
             raise ValueError("Die Tilgungsrate darf nicht negativ sein.")
+        if self.monthly_payment_amount_eur < 0:
+            raise ValueError("Die feste Monatsrate darf nicht negativ sein.")
         if self.interest_only_months < 0:
             raise ValueError("Tilgungsfreie Monate duerfen nicht negativ sein.")
         if self.annual_special_payment_percent < 0:
             raise ValueError("Sonderzahlungen pro Jahr duerfen nicht negativ sein.")
-        if self.annual_interest_percent == 0 and self.annual_repayment_percent == 0:
+        if self.annual_repayment_percent > 0 and self.monthly_payment_amount_eur > 0:
+            raise ValueError("Bitte entweder Tilgung in Prozent oder eine feste Monatsrate setzen.")
+        if self.annual_interest_percent == 0 and self.annual_repayment_percent == 0 and self.monthly_payment_amount_eur == 0:
             raise ValueError("Zins und Tilgung duerfen nicht gleichzeitig 0 sein.")
 
     def add_special_payment(self, month: int, amount_eur: Decimal | int | float | str) -> None:
@@ -56,7 +62,9 @@ class LoanCalculator:
         amount = _round_money(_to_decimal(amount_eur))
         if amount <= 0:
             raise ValueError("Die Sonderzahlung muss groesser als 0 sein.")
-        self._special_payments[month] = self._special_payments.get(month, Decimal("0")) + amount
+        updated_amount = self._special_payments.get(month, Decimal("0")) + amount
+        self._validate_special_payment_limit(month=month, amount_eur=updated_amount)
+        self._special_payments[month] = updated_amount
 
     def create_schedule(self, max_months: int = 600) -> pl.DataFrame:
         if max_months <= 0:
@@ -64,9 +72,7 @@ class LoanCalculator:
 
         balance = _round_money(self.principal_eur)
         monthly_interest_rate = self.annual_interest_percent / ONE_HUNDRED / TWELVE
-        regular_annuity = self.principal_eur * (
-            self.annual_interest_percent + self.annual_repayment_percent
-        ) / ONE_HUNDRED / TWELVE
+        monthly_payment = self._monthly_payment_amount()
         annual_special_payment_cap = (
             self.principal_eur * self.annual_special_payment_percent / ONE_HUNDRED
         )
@@ -85,7 +91,7 @@ class LoanCalculator:
                 scheduled_payment = interest
                 principal_payment = Decimal("0")
             else:
-                scheduled_payment = _round_money(regular_annuity)
+                scheduled_payment = monthly_payment
                 principal_payment = scheduled_payment - interest
                 if principal_payment < 0:
                     principal_payment = Decimal("0")
@@ -138,6 +144,36 @@ class LoanCalculator:
         if remaining_cap <= 0:
             return Decimal("0")
         return min(requested_payment, remaining_cap)
+
+    def _monthly_payment_amount(self) -> Decimal:
+        if self.monthly_payment_amount_eur > 0:
+            return _round_money(self.monthly_payment_amount_eur)
+
+        payment = self.principal_eur * (
+            self.annual_interest_percent + self.annual_repayment_percent
+        ) / ONE_HUNDRED / TWELVE
+        return _round_money(payment)
+
+    def _validate_special_payment_limit(self, month: int, amount_eur: Decimal) -> None:
+        year = ((month - 1) // 12) + 1
+        annual_cap = _round_money(self.principal_eur * self.annual_special_payment_percent / ONE_HUNDRED)
+        year_total = amount_eur
+
+        for existing_month, existing_amount in self._special_payments.items():
+            existing_year = ((existing_month - 1) // 12) + 1
+            if existing_year == year and existing_month != month:
+                year_total += existing_amount
+
+        if annual_cap <= 0:
+            raise ValueError(
+                f"Kredit '{self.name}': Sonderzahlungen sind nicht erlaubt, das Jahreslimit liegt bei 0 €."
+            )
+
+        if year_total > annual_cap:
+            raise ValueError(
+                f"Kredit '{self.name}': Sonderzahlungen in Jahr {year} uebersteigen das erlaubte Jahreslimit "
+                f"von {annual_cap} €."
+            )
 
 
 @dataclass(slots=True)

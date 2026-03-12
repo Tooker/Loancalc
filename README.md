@@ -8,24 +8,27 @@ Kleiner Kreditrechner auf Basis von `uv` und `polars`.
 uv sync
 ```
 
-Falls kein Netzwerk verfuegbar ist, ist mindestens `polars` lokal noch nicht installierbar.
+Falls kein Netzwerk verfuegbar ist, sind `polars` und `streamlit` lokal noch nicht installierbar.
 
 ## Nutzung
 
 ```bash
 uv run hello.py
+uv run streamlit run app.py
 ```
 
 ## Was die Klasse kann
 
 - Kreditbetrag in Euro
 - Sollzins in Prozent pro Jahr
-- Anfaengliche Tilgung in Prozent pro Jahr
+- Anfaengliche Tilgung in Prozent pro Jahr oder als feste Monatsrate
 - Tilgungsfreie Monate
 - Maximal erlaubte Sonderzahlungen pro Jahr in Prozent
 - Konkrete Sonderzahlungen per Monat und Betrag
 - Rueckgabe eines Tilgungsplans als `polars.DataFrame`
 - Mehrere parallele Kredite mit gemeinsamer Gesamttabelle
+- Streamlit-App fuer interaktive Eingabe, Tabellen und Diagramme
+- Laden und Speichern der Eingaben per YAML-Datei
 
 ## Noch sinnvolle Felder
 

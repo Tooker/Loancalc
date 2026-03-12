@@ -19,7 +19,7 @@ def main() -> None:
         name="kredit_b",
         principal_eur=120_000,
         annual_interest_percent=2.9,
-        annual_repayment_percent=3.0,
+        monthly_payment_amount_eur=650.0,
         interest_only_months=0,
         annual_special_payment_percent=10.0,
     )
