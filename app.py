@@ -344,6 +344,136 @@ def build_monthly_burden_table(combined_schedule: pl.DataFrame) -> pl.DataFrame:
     ).select(["monat", "zeitpunkt", "vorherige_belastung", "neue_belastung"])
 
 
+def build_interest_repayment_share_chart(combined_schedule: pl.DataFrame) -> alt.Chart:
+    share_data = combined_schedule.select(["monat", "zinsen_eur", "tilgung_eur"]).to_pandas().melt(
+        id_vars="monat",
+        value_vars=["zinsen_eur", "tilgung_eur"],
+        var_name="bestandteil",
+        value_name="wert_eur",
+    )
+    share_data["bestandteil"] = share_data["bestandteil"].map(
+        {"zinsen_eur": "Zinsen", "tilgung_eur": "Tilgung"}
+    )
+
+    return (
+        alt.Chart(share_data)
+        .mark_area()
+        .encode(
+            x=alt.X("monat:Q", title="Monat"),
+            y=alt.Y("wert_eur:Q", stack="normalize", title="Anteil an der Monatsrate"),
+            color=alt.Color(
+                "bestandteil:N",
+                title=None,
+                scale=alt.Scale(domain=["Zinsen", "Tilgung"], range=["#b45309", "#0f766e"]),
+            ),
+            tooltip=[
+                "monat:Q",
+                "bestandteil:N",
+                alt.Tooltip("wert_eur:Q", title="Betrag", format=",.2f"),
+            ],
+        )
+        .properties(height=280)
+    )
+
+
+def build_restschuld_small_multiples(detailed_schedule: pl.DataFrame) -> alt.Chart:
+    return (
+        alt.Chart(detailed_schedule.to_pandas())
+        .mark_line(strokeWidth=3, color="#1d4ed8")
+        .encode(
+            x=alt.X("monat:Q", title="Monat"),
+            y=alt.Y("restschuld_eur:Q", title="Restschuld (EUR)"),
+            tooltip=[
+                "kredit:N",
+                "monat:Q",
+                alt.Tooltip("restschuld_eur:Q", title="Restschuld", format=",.2f"),
+            ],
+        )
+        .properties(height=180)
+        .facet(column=alt.Column("kredit:N", title="Restschuld je Kredit"))
+    )
+
+
+def build_yearly_aggregation(combined_schedule: pl.DataFrame) -> pl.DataFrame:
+    return (
+        combined_schedule.sort(["jahr", "monat"])
+        .group_by("jahr")
+        .agg(
+            pl.col("zinsen_eur").sum().alias("zinsen_eur"),
+            pl.col("tilgung_eur").sum().alias("tilgung_eur"),
+            pl.col("sonderzahlung_eur").sum().alias("sonderzahlung_eur"),
+            pl.col("rate_eur").sum().alias("rate_eur"),
+            pl.col("restschuld_eur").last().alias("restschuld_eur"),
+        )
+        .sort("jahr")
+    )
+
+
+def build_yearly_aggregation_chart(yearly_aggregation: pl.DataFrame) -> alt.Chart:
+    yearly_data = yearly_aggregation.select(
+        ["jahr", "zinsen_eur", "tilgung_eur", "sonderzahlung_eur"]
+    ).to_pandas().melt(
+        id_vars="jahr",
+        value_vars=["zinsen_eur", "tilgung_eur", "sonderzahlung_eur"],
+        var_name="bestandteil",
+        value_name="wert_eur",
+    )
+    yearly_data["bestandteil"] = yearly_data["bestandteil"].map(
+        {
+            "zinsen_eur": "Zinsen",
+            "tilgung_eur": "Tilgung",
+            "sonderzahlung_eur": "Sonderzahlung",
+        }
+    )
+
+    bars = (
+        alt.Chart(yearly_data)
+        .mark_bar()
+        .encode(
+            x=alt.X("jahr:O", title="Jahr"),
+            y=alt.Y("wert_eur:Q", title="Jahressumme (EUR)"),
+            color=alt.Color(
+                "bestandteil:N",
+                title=None,
+                scale=alt.Scale(
+                    domain=["Zinsen", "Tilgung", "Sonderzahlung"],
+                    range=["#b45309", "#0f766e", "#7c3aed"],
+                ),
+            ),
+            tooltip=[
+                "jahr:O",
+                "bestandteil:N",
+                alt.Tooltip("wert_eur:Q", title="Betrag", format=",.2f"),
+            ],
+        )
+    )
+
+    restschuld_line = (
+        alt.Chart(yearly_aggregation.to_pandas())
+        .mark_line(strokeWidth=3, color="#1d4ed8", point=True)
+        .encode(
+            x=alt.X("jahr:O"),
+            y=alt.Y("restschuld_eur:Q", title="Restschuld Jahresende (EUR)"),
+            tooltip=[
+                "jahr:O",
+                alt.Tooltip("restschuld_eur:Q", title="Restschuld", format=",.2f"),
+            ],
+        )
+    )
+
+    return alt.layer(bars, restschuld_line).resolve_scale(y="independent").properties(height=320)
+
+
+def prepare_yearly_aggregation_for_display(yearly_aggregation: pl.DataFrame) -> pl.DataFrame:
+    return yearly_aggregation.with_columns(
+        pl.col("rate_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("zinsen_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("tilgung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("sonderzahlung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("restschuld_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+    )
+
+
 def build_laufzeit_table(detailed_schedule: pl.DataFrame, combined_schedule: pl.DataFrame) -> pl.DataFrame:
     per_loan = detailed_schedule.group_by("kredit").agg(pl.col("monat").max().alias("laufzeit_monate"))
     total = pl.DataFrame({"kredit": ["gesamt"], "laufzeit_monate": [combined_schedule["monat"].max()]})
@@ -393,6 +523,8 @@ def main() -> None:
         return
 
     combined_schedule_display = prepare_combined_schedule_for_display(combined_schedule)
+    yearly_aggregation = build_yearly_aggregation(combined_schedule)
+    yearly_aggregation_display = prepare_yearly_aggregation_for_display(yearly_aggregation)
     sorted_schedule = combined_schedule.sort("monat")
     first_row = sorted_schedule.head(1)
     last_row = sorted_schedule.tail(1)
@@ -419,6 +551,30 @@ def main() -> None:
     with summary_table_col_2:
         st.subheader("Aenderungen der monatlichen Belastung")
         st.dataframe(build_monthly_burden_table(combined_schedule), use_container_width=True, hide_index=True)
+
+    composition_col, small_multiples_col = st.columns(2)
+    with composition_col:
+        st.subheader("Anteil Zins/Tilgung pro Monat")
+        st.altair_chart(build_interest_repayment_share_chart(combined_schedule), use_container_width=True)
+    with small_multiples_col:
+        st.subheader("Restschuld je Einzelkredit")
+        st.altair_chart(build_restschuld_small_multiples(detailed_schedule), use_container_width=True)
+
+    st.subheader("Jahresaggregation")
+    st.altair_chart(build_yearly_aggregation_chart(yearly_aggregation), use_container_width=True)
+    st.dataframe(
+        yearly_aggregation_display,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "jahr": st.column_config.NumberColumn("Jahr"),
+            "rate_eur": "Jahresrate",
+            "zinsen_eur": "Zinsen",
+            "tilgung_eur": "Tilgung",
+            "sonderzahlung_eur": "Sonderzahlung",
+            "restschuld_eur": "Restschuld Jahresende",
+        },
+    )
 
     table_col_1, table_col_2 = st.columns(2)
     with table_col_1:
