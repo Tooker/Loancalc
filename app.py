@@ -114,7 +114,12 @@ def build_api_signature(query: RateQuery) -> str:
 
 
 def collect_special_payments_for_state(scenario_id: str, index: int) -> list[dict[str, float]]:
-    rows = extract_special_payments(st.session_state.get(skey(scenario_id, f"specials_{index}"), default_special_payments()))
+    rows = extract_special_payments(
+        st.session_state.get(
+            skey(scenario_id, f"specials_data_{index}"),
+            st.session_state.get(skey(scenario_id, f"specials_editor_{index}"), default_special_payments()),
+        )
+    )
     special_payments: list[dict[str, float]] = []
     for row in rows:
         month = row.get("monat")
@@ -230,7 +235,7 @@ def load_scenario_state(scenario_id: str, scenario_data: dict[str, object]) -> N
         special_payments = loan.get("special_payments", [])
         if not isinstance(special_payments, list):
             raise ValueError(f"Die Sonderzahlungen fuer Kredit {index + 1} sind ungueltig.")
-        st.session_state[skey(scenario_id, f"specials_{index}")] = [
+        st.session_state[skey(scenario_id, f"specials_data_{index}")] = [
             {
                 "monat": int(item.get("monat", 0)),
                 "betrag_eur": float(item.get("betrag_eur", 0.0)),
@@ -238,6 +243,9 @@ def load_scenario_state(scenario_id: str, scenario_data: dict[str, object]) -> N
             for item in special_payments
             if isinstance(item, dict)
         ] or default_special_payments()
+        editor_key = skey(scenario_id, f"specials_editor_{index}")
+        if editor_key in st.session_state:
+            del st.session_state[editor_key]
 
 
 def load_app_state_from_yaml(content: bytes) -> None:
@@ -414,8 +422,8 @@ def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
     )
 
     special_payments = st.data_editor(
-        default_special_payments(),
-        key=skey(scenario_id, f"specials_{index}"),
+        st.session_state.get(skey(scenario_id, f"specials_data_{index}"), default_special_payments()),
+        key=skey(scenario_id, f"specials_editor_{index}"),
         use_container_width=True,
         num_rows="dynamic",
         column_config={
@@ -423,6 +431,7 @@ def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
             "betrag_eur": st.column_config.NumberColumn("Betrag (EUR)", min_value=0.0, step=100.0),
         },
     )
+    st.session_state[skey(scenario_id, f"specials_data_{index}")] = extract_special_payments(special_payments)
 
     for row in extract_special_payments(special_payments):
         month = row.get("monat")
@@ -866,6 +875,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Szenarien")
+        download_placeholder = st.empty()
         uploaded_file = st.file_uploader("YAML laden", type=["yaml", "yml"])
         if uploaded_file is not None:
             try:
@@ -881,19 +891,19 @@ def main() -> None:
             clone_scenario_state("scenario_b", "scenario_a")
             st.rerun()
 
-        st.download_button(
-            "YAML speichern",
-            data=export_app_state_to_yaml(),
-            file_name="loancalc-scenarios.yaml",
-            mime="application/x-yaml",
-            use_container_width=True,
-        )
-
     scenario_results: dict[str, dict[str, pl.DataFrame] | None] = {}
     tabs = st.tabs(list(SCENARIOS.values()))
     for tab, (scenario_id, scenario_label) in zip(tabs, SCENARIOS.items(), strict=False):
         with tab:
             scenario_results[scenario_id] = render_scenario_tab(scenario_id, scenario_label)
+
+    download_placeholder.download_button(
+        "YAML speichern",
+        data=export_app_state_to_yaml(),
+        file_name="loancalc-scenarios.yaml",
+        mime="application/x-yaml",
+        use_container_width=True,
+    )
 
     available_scenarios = [
         (SCENARIOS[scenario_id], result["combined_schedule"])
