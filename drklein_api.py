@@ -20,14 +20,14 @@ DEFAULT_HEADERS = {
 }
 
 RATE_KEYS = (
-    "effektivzins",
-    "effektivZins",
     "sollzins",
     "sollZins",
-    "zins",
-    "zinssatz",
     "nominalzins",
     "nominalZins",
+    "effektivzins",
+    "effektivZins",
+    "zins",
+    "zinssatz",
 )
 
 
@@ -44,7 +44,7 @@ class ImmobiliePayload(BaseModel):
 
 class FinanzierungPayload(BaseModel):
     darlehensbetrag: float
-    monatliche_rate: float = Field(alias="monatlicheRate")
+    monatliche_rate: float | None = Field(default=None, alias="monatlicheRate")
     auszahlungstermin: str | None = None
     finanzierungszweck: str = "KAUF"
     tilgungssatz: float | None = None
@@ -65,7 +65,7 @@ class RateQuery(BaseModel):
     kaufpreis_eur: float
     postleitzahl: str
     darlehensbetrag_eur: float
-    monatliche_rate_eur: float
+    monatliche_rate_eur: float | None = None
     laufzeit_jahre: int
     finanzierungszweck: str = "KAUF"
     darlehensart: str = "ANNUITAET"
@@ -143,6 +143,13 @@ class DrKleinRateClient(BaseModel):
         candidates: dict[str, float] = {}
         self._collect_rate_candidates(data, candidates)
         return candidates
+
+    def extract_preferred_rate(self, data: Any) -> float:
+        candidates = self.extract_rate_candidates(data)
+        for key in RATE_KEYS:
+            if key in candidates:
+                return candidates[key]
+        raise DrKleinApiError("In der API-Antwort wurde kein passender Zinswert gefunden.")
 
     def _collect_rate_candidates(self, value: Any, candidates: dict[str, float]) -> None:
         if isinstance(value, dict):

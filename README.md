@@ -31,6 +31,8 @@ uv run drklein_example.py
 - Streamlit-App fuer interaktive Eingabe, Tabellen und Diagramme
 - Laden und Speichern der Eingaben per YAML-Datei
 - API-Client fuer Zinsabfragen ueber feste Laufzeiten
+- Optionaler Sollzins-Abruf in der Streamlit-App auf Basis der Eingabedaten
+- Zwei Szenarien mit Forking, Tabs und Gegenueberstellung
 
 ## Noch sinnvolle Felder
 
