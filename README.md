@@ -18,6 +18,28 @@ uv run streamlit run app.py
 uv run drklein_example.py
 ```
 
+## Docker
+
+Build:
+
+```bash
+docker build -t loancalc .
+```
+
+Start:
+
+```bash
+docker run --rm -p 8501:8501 loancalc
+```
+
+Oder mit Compose:
+
+```bash
+docker compose up -d --build
+```
+
+Die App ist dann unter `http://localhost:8501` erreichbar.
+
 ## Was die Klasse kann
 
 - Kreditbetrag in Euro

@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+.uv-cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.yaml
+*.yml
+
