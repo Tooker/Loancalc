@@ -31,6 +31,7 @@ class LoanCalculator:
     interest_only_months: int = 0
     annual_special_payment_percent: Decimal | int | float | str = 0
     _special_payments: dict[int, Decimal] = field(default_factory=dict, init=False)
+    _gift_special_payments: dict[int, Decimal] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.principal_eur = _to_decimal(self.principal_eur)
@@ -56,7 +57,12 @@ class LoanCalculator:
         if self.annual_interest_percent == 0 and self.annual_repayment_percent == 0 and self.monthly_payment_amount_eur == 0:
             raise ValueError("Zins und Tilgung duerfen nicht gleichzeitig 0 sein.")
 
-    def add_special_payment(self, month: int, amount_eur: Decimal | int | float | str) -> None:
+    def add_special_payment(
+        self,
+        month: int,
+        amount_eur: Decimal | int | float | str,
+        is_gift: bool = False,
+    ) -> None:
         if month <= 0:
             raise ValueError("Der Abrechnungsmonat muss groesser als 0 sein.")
         amount = _round_money(_to_decimal(amount_eur))
@@ -65,6 +71,8 @@ class LoanCalculator:
         updated_amount = self._special_payments.get(month, Decimal("0")) + amount
         self._validate_special_payment_limit(month=month, amount_eur=updated_amount)
         self._special_payments[month] = updated_amount
+        if is_gift:
+            self._gift_special_payments[month] = self._gift_special_payments.get(month, Decimal("0")) + amount
 
     def create_schedule(self, max_months: int = 600) -> pl.DataFrame:
         if max_months <= 0:
@@ -98,14 +106,17 @@ class LoanCalculator:
                     scheduled_payment = interest
 
             principal_payment = min(principal_payment, balance)
+            requested_special_payment = self._allowed_special_payment(month, annual_special_payment_cap, special_paid_by_year)
             special_payment = min(
-                self._allowed_special_payment(month, annual_special_payment_cap, special_paid_by_year),
+                requested_special_payment,
                 balance - principal_payment,
             )
             special_payment = max(_round_money(special_payment), Decimal("0"))
+            gift_special_payment = self._gift_special_payment(month, requested_special_payment, special_payment)
+            cost_relevant_payment = _round_money(actual_payment := interest + principal_payment + special_payment)
+            cost_relevant_payment = _round_money(cost_relevant_payment - gift_special_payment)
 
             remaining_balance = _round_money(balance - principal_payment - special_payment)
-            actual_payment = _round_money(interest + principal_payment + special_payment)
 
             if special_payment > 0:
                 special_paid_by_year[year] = special_paid_by_year.get(year, Decimal("0")) + special_payment
@@ -119,6 +130,8 @@ class LoanCalculator:
                     "zinsen_eur": float(interest),
                     "tilgung_eur": float(principal_payment),
                     "sonderzahlung_eur": float(special_payment),
+                    "sonderzahlung_geschenk_eur": float(gift_special_payment),
+                    "kosten_eur": float(cost_relevant_payment),
                     "restschuld_eur": float(remaining_balance),
                 }
             )
@@ -144,6 +157,25 @@ class LoanCalculator:
         if remaining_cap <= 0:
             return Decimal("0")
         return min(requested_payment, remaining_cap)
+
+    def _gift_special_payment(
+        self,
+        month: int,
+        requested_special_payment: Decimal,
+        actual_special_payment: Decimal,
+    ) -> Decimal:
+        if actual_special_payment <= 0 or requested_special_payment <= 0:
+            return Decimal("0")
+
+        requested_gift_payment = self._gift_special_payments.get(month, Decimal("0"))
+        if requested_gift_payment <= 0:
+            return Decimal("0")
+
+        if actual_special_payment >= requested_special_payment:
+            return min(_round_money(requested_gift_payment), actual_special_payment)
+
+        proportional_gift_payment = actual_special_payment * requested_gift_payment / requested_special_payment
+        return min(_round_money(proportional_gift_payment), actual_special_payment)
 
     def _monthly_payment_amount(self) -> Decimal:
         if self.monthly_payment_amount_eur > 0:
@@ -195,6 +227,8 @@ class LoanPortfolio:
                     "zinsen_eur": pl.Float64,
                     "tilgung_eur": pl.Float64,
                     "sonderzahlung_eur": pl.Float64,
+                    "sonderzahlung_geschenk_eur": pl.Float64,
+                    "kosten_eur": pl.Float64,
                     "restschuld_eur": pl.Float64,
                 }
             )
@@ -209,6 +243,8 @@ class LoanPortfolio:
                 pl.col("zinsen_eur").sum(),
                 pl.col("tilgung_eur").sum(),
                 pl.col("sonderzahlung_eur").sum(),
+                pl.col("sonderzahlung_geschenk_eur").sum(),
+                pl.col("kosten_eur").sum(),
                 pl.col("restschuld_eur").sum(),
             )
             .sort(["monat", "jahr"])
@@ -225,6 +261,8 @@ class LoanPortfolio:
                     "zinsen_eur": pl.Float64,
                     "tilgung_eur": pl.Float64,
                     "sonderzahlung_eur": pl.Float64,
+                    "sonderzahlung_geschenk_eur": pl.Float64,
+                    "kosten_eur": pl.Float64,
                     "restschuld_eur": pl.Float64,
                 }
             )

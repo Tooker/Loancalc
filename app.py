@@ -14,7 +14,7 @@ from loan_calculator import LoanCalculator, LoanPortfolio
 
 
 DEFAULT_SPECIAL_PAYMENTS = [
-    {"monat": 12, "betrag_eur": 5000.0},
+    {"monat": 12, "betrag_eur": 5000.0, "geschenk": False},
 ]
 
 DEFAULT_LOAN_COUNT = 2
@@ -25,7 +25,7 @@ SCENARIOS = {
 }
 
 
-def default_special_payments() -> list[dict[str, float]]:
+def default_special_payments() -> list[dict[str, object]]:
     return [row.copy() for row in DEFAULT_SPECIAL_PAYMENTS]
 
 
@@ -63,6 +63,19 @@ def extract_special_payments(edited_rows: object) -> list[dict[str, object]]:
     return []
 
 
+def normalize_special_payment_row(row: dict[str, object]) -> dict[str, object] | None:
+    month = row.get("monat")
+    amount = row.get("betrag_eur")
+    if not month or amount is None:
+        return None
+
+    return {
+        "monat": int(month),
+        "betrag_eur": float(amount),
+        "geschenk": bool(row.get("geschenk", False)),
+    }
+
+
 def format_duration(months: int) -> str:
     years, remaining_months = divmod(months, 12)
     parts: list[str] = []
@@ -88,9 +101,12 @@ def prepare_combined_schedule_for_display(combined_schedule: pl.DataFrame) -> pl
 
     return schedule_with_ratio.with_columns(
         pl.col("rate_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("kosten_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("zinsen_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("tilgung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("sonderzahlung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("sonderzahlung_geschenk_eur")
+        .map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("restschuld_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("tilgung_zu_zinsen")
         .map_elements(lambda value: "-" if value is None else f"{float(value):.2f}", return_dtype=pl.String)
@@ -100,9 +116,11 @@ def prepare_combined_schedule_for_display(combined_schedule: pl.DataFrame) -> pl
             "monat",
             "jahr",
             "rate_eur",
+            "kosten_eur",
             "zinsen_eur",
             "tilgung_eur",
             "sonderzahlung_eur",
+            "sonderzahlung_geschenk_eur",
             "restschuld_eur",
             "tilgung_zu_zinsen_text",
         ]
@@ -113,19 +131,18 @@ def build_api_signature(query: RateQuery) -> str:
     return json.dumps(query.model_dump(mode="json"), sort_keys=True, ensure_ascii=True)
 
 
-def collect_special_payments_for_state(scenario_id: str, index: int) -> list[dict[str, float]]:
+def collect_special_payments_for_state(scenario_id: str, index: int) -> list[dict[str, object]]:
     rows = extract_special_payments(
         st.session_state.get(
             skey(scenario_id, f"specials_data_{index}"),
-            st.session_state.get(skey(scenario_id, f"specials_editor_{index}"), default_special_payments()),
+            default_special_payments(),
         )
     )
-    special_payments: list[dict[str, float]] = []
+    special_payments: list[dict[str, object]] = []
     for row in rows:
-        month = row.get("monat")
-        amount = row.get("betrag_eur")
-        if month and amount is not None:
-            special_payments.append({"monat": int(month), "betrag_eur": float(amount)})
+        normalized_row = normalize_special_payment_row(row)
+        if normalized_row is not None:
+            special_payments.append(normalized_row)
     return special_payments
 
 
@@ -236,12 +253,10 @@ def load_scenario_state(scenario_id: str, scenario_data: dict[str, object]) -> N
         if not isinstance(special_payments, list):
             raise ValueError(f"Die Sonderzahlungen fuer Kredit {index + 1} sind ungueltig.")
         st.session_state[skey(scenario_id, f"specials_data_{index}")] = [
-            {
-                "monat": int(item.get("monat", 0)),
-                "betrag_eur": float(item.get("betrag_eur", 0.0)),
-            }
+            normalized_row
             for item in special_payments
             if isinstance(item, dict)
+            if (normalized_row := normalize_special_payment_row(item)) is not None
         ] or default_special_payments()
         editor_key = skey(scenario_id, f"specials_editor_{index}")
         if editor_key in st.session_state:
@@ -279,6 +294,8 @@ def fetch_interest_from_api(scenario_id: str, index: int, query: RateQuery) -> N
 
 
 def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
+    specials_data_key = skey(scenario_id, f"specials_data_{index}")
+
     loan_name = st.text_input(
         f"Kreditname {index + 1}",
         value=f"kredit_{index + 1}",
@@ -422,22 +439,33 @@ def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
     )
 
     special_payments = st.data_editor(
-        st.session_state.get(skey(scenario_id, f"specials_data_{index}"), default_special_payments()),
+        st.session_state.get(specials_data_key, default_special_payments()),
         key=skey(scenario_id, f"specials_editor_{index}"),
         use_container_width=True,
         num_rows="dynamic",
         column_config={
             "monat": st.column_config.NumberColumn("Monat", min_value=1, step=1),
             "betrag_eur": st.column_config.NumberColumn("Betrag (EUR)", min_value=0.0, step=100.0),
+            "geschenk": st.column_config.CheckboxColumn(
+                "Geschenk",
+                help="Geschenk-Sonderzahlungen reduzieren die Restschuld, zaehlen aber nicht in die Gesamtkosten.",
+                default=False,
+            ),
         },
     )
-    st.session_state[skey(scenario_id, f"specials_data_{index}")] = extract_special_payments(special_payments)
+    normalized_special_payments = [
+        normalized_row
+        for row in extract_special_payments(special_payments)
+        if (normalized_row := normalize_special_payment_row(row)) is not None
+    ]
+    st.session_state[specials_data_key] = normalized_special_payments
 
-    for row in extract_special_payments(special_payments):
-        month = row.get("monat")
-        amount = row.get("betrag_eur")
-        if month and amount:
-            loan.add_special_payment(month=int(month), amount_eur=Decimal(str(amount)))
+    for normalized_row in normalized_special_payments:
+        loan.add_special_payment(
+            month=int(normalized_row["monat"]),
+            amount_eur=Decimal(str(normalized_row["betrag_eur"])),
+            is_gift=bool(normalized_row["geschenk"]),
+        )
 
     return loan
 
@@ -519,7 +547,17 @@ def build_monthly_burden_table(combined_schedule: pl.DataFrame) -> pl.DataFrame:
         .otherwise(False)
         .alias("rate_geaendert")
     )
-    return chart_data.filter(pl.col("rate_geaendert")).with_columns(
+    changed_rates = chart_data.filter(pl.col("rate_geaendert")).with_columns(
+        pl.col("monat").shift(-1).alias("naechste_aenderung_monat")
+    ).with_columns(
+        pl.when(pl.col("naechste_aenderung_monat").is_null())
+        .then(pl.lit(int(combined_schedule["monat"].max()) + 1))
+        .otherwise(pl.col("naechste_aenderung_monat"))
+        .alias("segment_ende_monat")
+    ).with_columns(
+        (pl.col("segment_ende_monat") - pl.col("monat")).alias("dauer_monate")
+    )
+    return changed_rates.with_columns(
         pl.col("monat").map_elements(lambda value: format_duration(int(value)), return_dtype=pl.String).alias("zeitpunkt"),
         pl.col("monatsbelastung_eur")
         .map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String)
@@ -531,7 +569,10 @@ def build_monthly_burden_table(combined_schedule: pl.DataFrame) -> pl.DataFrame:
             .map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String)
         )
         .alias("vorherige_belastung"),
-    ).select(["monat", "zeitpunkt", "vorherige_belastung", "neue_belastung"])
+        pl.col("dauer_monate")
+        .map_elements(lambda value: format_duration(int(value)), return_dtype=pl.String)
+        .alias("dauer"),
+    ).select(["monat", "zeitpunkt", "vorherige_belastung", "neue_belastung", "dauer", "dauer_monate"])
 
 
 def build_interest_repayment_share_chart(combined_schedule: pl.DataFrame) -> alt.Chart:
@@ -589,9 +630,11 @@ def build_yearly_aggregation(combined_schedule: pl.DataFrame) -> pl.DataFrame:
         combined_schedule.sort(["jahr", "monat"])
         .group_by("jahr")
         .agg(
+            pl.col("kosten_eur").sum().alias("kosten_eur"),
             pl.col("zinsen_eur").sum().alias("zinsen_eur"),
             pl.col("tilgung_eur").sum().alias("tilgung_eur"),
             pl.col("sonderzahlung_eur").sum().alias("sonderzahlung_eur"),
+            pl.col("sonderzahlung_geschenk_eur").sum().alias("sonderzahlung_geschenk_eur"),
             pl.col("rate_eur").sum().alias("rate_eur"),
             pl.col("restschuld_eur").last().alias("restschuld_eur"),
         )
@@ -657,9 +700,12 @@ def build_yearly_aggregation_chart(yearly_aggregation: pl.DataFrame) -> alt.Char
 def prepare_yearly_aggregation_for_display(yearly_aggregation: pl.DataFrame) -> pl.DataFrame:
     return yearly_aggregation.with_columns(
         pl.col("rate_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("kosten_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("zinsen_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("tilgung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("sonderzahlung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("sonderzahlung_geschenk_eur")
+        .map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("restschuld_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
     )
 
@@ -667,9 +713,12 @@ def prepare_yearly_aggregation_for_display(yearly_aggregation: pl.DataFrame) -> 
 def prepare_detailed_schedule_for_display(detailed_schedule: pl.DataFrame) -> pl.DataFrame:
     return detailed_schedule.with_columns(
         pl.col("rate_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("kosten_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("zinsen_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("tilgung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("sonderzahlung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("sonderzahlung_geschenk_eur")
+        .map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("restschuld_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
     )
 
@@ -691,7 +740,7 @@ def build_scenario_comparison_cumulative_cost_chart(
     for scenario_label, combined_schedule in scenario_schedules:
         cumulative = 0.0
         for row in combined_schedule.sort("monat").iter_rows(named=True):
-            cumulative += float(row["rate_eur"])
+            cumulative += float(row["kosten_eur"])
             rows.append(
                 {
                     "szenario": scenario_label,
@@ -795,14 +844,33 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
     laufzeit_total = int(combined_schedule["monat"].max())
     zinsen_total = float(combined_schedule["zinsen_eur"].sum())
     monatliche_belastung = float(first_row["rate_eur"].item())
-    kumulierte_gesamtrate = float(combined_schedule["rate_eur"].sum())
+    kumulierte_gesamtkosten = float(combined_schedule["kosten_eur"].sum())
+    geschenk_sonderzahlungen = float(combined_schedule["sonderzahlung_geschenk_eur"].sum())
+    durchschnittliche_belastung = kumulierte_gesamtkosten / laufzeit_total if laufzeit_total > 0 else 0.0
 
-    metric_1, metric_2, metric_3, metric_4, metric_5 = st.columns(5)
-    metric_1.metric("Restschuld gesamt", f"{restschuld_total:,.2f} EUR")
-    metric_2.metric("Monatliche Belastung", f"{monatliche_belastung:,.2f} EUR")
-    metric_3.metric("Laufzeit im Modell", format_duration(laufzeit_total))
-    metric_4.metric("Zinsen gesamt", f"{zinsen_total:,.2f} EUR")
-    metric_5.metric("Kumulierte Gesamtkosten", f"{kumulierte_gesamtrate:,.2f} EUR")
+    metrics_table = pl.DataFrame(
+        {
+            "kennzahl": [
+                "Restschuld gesamt",
+                "Monatliche Belastung",
+                "Laufzeit im Modell",
+                "Zinsen gesamt",
+                "Kumulierte Gesamtkosten",
+                "Mittlere Belastung",
+            ],
+            "wert": [
+                f"{restschuld_total:,.2f} EUR",
+                f"{monatliche_belastung:,.2f} EUR",
+                format_duration(laufzeit_total),
+                f"{zinsen_total:,.2f} EUR",
+                f"{kumulierte_gesamtkosten:,.2f} EUR",
+                f"{durchschnittliche_belastung:,.2f} EUR",
+            ],
+        }
+    )
+    if geschenk_sonderzahlungen > 0:
+        st.caption(f"Nicht eingerechnete Geschenk-Sonderzahlungen: {geschenk_sonderzahlungen:,.2f} EUR")
+    st.dataframe(metrics_table, use_container_width=True, hide_index=True)
 
     st.subheader("Restschuldverlauf")
     st.altair_chart(build_restschuld_chart(detailed_schedule, combined_schedule), use_container_width=True)
@@ -832,9 +900,11 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
         column_config={
             "jahr": st.column_config.NumberColumn("Jahr"),
             "rate_eur": "Jahresrate",
+            "kosten_eur": "Gesamtkosten",
             "zinsen_eur": "Zinsen",
             "tilgung_eur": "Tilgung",
             "sonderzahlung_eur": "Sonderzahlung",
+            "sonderzahlung_geschenk_eur": "Davon Geschenk",
             "restschuld_eur": "Restschuld Jahresende",
         },
     )
@@ -850,16 +920,34 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
                     "monat": st.column_config.NumberColumn("Monat"),
                     "jahr": st.column_config.NumberColumn("Jahr"),
                     "rate_eur": "Rate",
+                    "kosten_eur": "Gesamtkosten",
                     "zinsen_eur": "Zinsen",
                     "tilgung_eur": "Tilgung",
                     "sonderzahlung_eur": "Sonderzahlung",
+                    "sonderzahlung_geschenk_eur": "Davon Geschenk",
                     "restschuld_eur": "Restschuld",
                     "tilgung_zu_zinsen_text": "Tilgung / Zinsen",
                 },
             )
     with table_col_2:
         with st.expander("Detailtabelle", expanded=False):
-            st.dataframe(detailed_schedule_display, use_container_width=True, hide_index=True)
+            st.dataframe(
+                detailed_schedule_display,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "kredit": "Kredit",
+                    "monat": st.column_config.NumberColumn("Monat"),
+                    "jahr": st.column_config.NumberColumn("Jahr"),
+                    "rate_eur": "Rate",
+                    "kosten_eur": "Gesamtkosten",
+                    "zinsen_eur": "Zinsen",
+                    "tilgung_eur": "Tilgung",
+                    "sonderzahlung_eur": "Sonderzahlung",
+                    "sonderzahlung_geschenk_eur": "Davon Geschenk",
+                    "restschuld_eur": "Restschuld",
+                },
+            )
 
     return {
         "combined_schedule": combined_schedule,
@@ -918,7 +1006,7 @@ def main() -> None:
 
     comparison_col_1, comparison_col_2 = st.columns(2)
     with comparison_col_1:
-        st.subheader("Kumulierte Belastung")
+        st.subheader("Kumulierte Gesamtkosten")
         st.altair_chart(
             build_scenario_comparison_cumulative_cost_chart(available_scenarios),
             use_container_width=True,
