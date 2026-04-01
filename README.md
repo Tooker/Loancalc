@@ -48,6 +48,7 @@ Die App ist dann unter `http://localhost:8501` erreichbar.
 - Tilgungsfreie Monate
 - Maximal erlaubte Sonderzahlungen pro Jahr in Prozent
 - Konkrete Sonderzahlungen per Monat und Betrag
+- Optionale Markierung von Sonderzahlungen als Geschenk, damit sie die Restschuld senken, aber nicht in die Gesamtkosten laufen
 - Rueckgabe eines Tilgungsplans als `polars.DataFrame`
 - Mehrere parallele Kredite mit gemeinsamer Gesamttabelle
 - Streamlit-App fuer interaktive Eingabe, Tabellen und Diagramme
@@ -62,3 +63,14 @@ Die App ist dann unter `http://localhost:8501` erreichbar.
 - Wahl, ob die Jahres-Sonderzahlung pro Kalenderjahr oder Vertragsjahr gilt
 - Optional feste Monatsrate statt Ableitung aus Zins plus Tilgung
 - Bereitstellungszinsen oder einmalige Nebenkosten
+
+## YAML-Hinweis fuer Sonderzahlungen
+
+`special_payments` unterstuetzt jetzt optional das Feld `geschenk`. Fehlt das Feld, bleibt das bisherige Verhalten aktiv.
+
+```yaml
+special_payments:
+  - monat: 12
+    betrag_eur: 5000
+    geschenk: true
+```
