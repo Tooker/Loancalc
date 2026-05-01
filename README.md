@@ -45,6 +45,7 @@ Die App ist dann unter `http://localhost:8501` erreichbar.
 - Kreditbetrag in Euro
 - Sollzins in Prozent pro Jahr
 - Anfaengliche Tilgung in Prozent pro Jahr oder als feste Monatsrate
+- Optionale Ratenanpassungen ab einem frei waehlbaren Monat
 - Tilgungsfreie Monate
 - Maximal erlaubte Sonderzahlungen pro Jahr in Prozent
 - Konkrete Sonderzahlungen per Monat und Betrag
@@ -73,4 +74,14 @@ special_payments:
   - monat: 12
     betrag_eur: 5000
     geschenk: true
+```
+
+## YAML-Hinweis fuer Ratenaenderungen
+
+`payment_changes` erlaubt eine neue Monatsrate ab einem bestimmten Monat.
+
+```yaml
+payment_changes:
+  - monat_ab: 24
+    rate_eur: 1600
 ```

@@ -32,6 +32,7 @@ class LoanCalculator:
     annual_special_payment_percent: Decimal | int | float | str = 0
     _special_payments: dict[int, Decimal] = field(default_factory=dict, init=False)
     _gift_special_payments: dict[int, Decimal] = field(default_factory=dict, init=False)
+    _payment_changes: dict[int, Decimal] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.principal_eur = _to_decimal(self.principal_eur)
@@ -74,6 +75,18 @@ class LoanCalculator:
         if is_gift:
             self._gift_special_payments[month] = self._gift_special_payments.get(month, Decimal("0")) + amount
 
+    def add_payment_change(
+        self,
+        month: int,
+        monthly_payment_amount_eur: Decimal | int | float | str,
+    ) -> None:
+        if month <= 0:
+            raise ValueError("Der Monat fuer die Ratenaenderung muss groesser als 0 sein.")
+        payment_amount = _round_money(_to_decimal(monthly_payment_amount_eur))
+        if payment_amount <= 0:
+            raise ValueError("Die neue Monatsrate muss groesser als 0 sein.")
+        self._payment_changes[month] = payment_amount
+
     def create_schedule(self, max_months: int = 600) -> pl.DataFrame:
         if max_months <= 0:
             raise ValueError("max_months muss groesser als 0 sein.")
@@ -94,6 +107,7 @@ class LoanCalculator:
 
             year = ((month - 1) // 12) + 1
             interest = _round_money(balance * monthly_interest_rate)
+            monthly_payment = self._payment_amount_for_month(month, monthly_payment)
 
             if month <= self.interest_only_months:
                 scheduled_payment = interest
@@ -185,6 +199,9 @@ class LoanCalculator:
             self.annual_interest_percent + self.annual_repayment_percent
         ) / ONE_HUNDRED / TWELVE
         return _round_money(payment)
+
+    def _payment_amount_for_month(self, month: int, current_payment: Decimal) -> Decimal:
+        return self._payment_changes.get(month, current_payment)
 
     def _validate_special_payment_limit(self, month: int, amount_eur: Decimal) -> None:
         year = ((month - 1) // 12) + 1

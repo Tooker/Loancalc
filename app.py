@@ -76,6 +76,18 @@ def normalize_special_payment_row(row: dict[str, object]) -> dict[str, object] |
     }
 
 
+def normalize_payment_change_row(row: dict[str, object]) -> dict[str, object] | None:
+    month = row.get("monat_ab")
+    payment_amount = row.get("rate_eur")
+    if not month or payment_amount is None:
+        return None
+
+    return {
+        "monat_ab": int(month),
+        "rate_eur": float(payment_amount),
+    }
+
+
 def format_duration(months: int) -> str:
     years, remaining_months = divmod(months, 12)
     parts: list[str] = []
@@ -146,6 +158,40 @@ def collect_special_payments_for_state(scenario_id: str, index: int) -> list[dic
     return special_payments
 
 
+def collect_payment_changes_for_state(scenario_id: str, index: int) -> list[dict[str, object]]:
+    rows = extract_special_payments(
+        st.session_state.get(
+            skey(scenario_id, f"payment_changes_data_{index}"),
+            [],
+        )
+    )
+    payment_changes: list[dict[str, object]] = []
+    for row in rows:
+        normalized_row = normalize_payment_change_row(row)
+        if normalized_row is not None:
+            payment_changes.append(normalized_row)
+    return payment_changes
+
+
+def empty_payment_changes_table() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "monat_ab": pl.Int64,
+            "rate_eur": pl.Float64,
+        }
+    )
+
+
+def empty_special_payments_table() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "monat": pl.Int64,
+            "betrag_eur": pl.Float64,
+            "geschenk": pl.Boolean,
+        }
+    )
+
+
 def export_scenario_state(scenario_id: str) -> dict[str, object]:
     loan_count = int(st.session_state.get(skey(scenario_id, "loan_count"), DEFAULT_LOAN_COUNT))
     loans: list[dict[str, object]] = []
@@ -172,6 +218,7 @@ def export_scenario_state(scenario_id: str) -> dict[str, object]:
                 "annual_special_payment_percent": float(
                     st.session_state.get(skey(scenario_id, f"special_percent_{index}"), 0.0)
                 ),
+                "payment_changes": collect_payment_changes_for_state(scenario_id, index),
                 "special_payments": collect_special_payments_for_state(scenario_id, index),
             }
         )
@@ -258,9 +305,21 @@ def load_scenario_state(scenario_id: str, scenario_data: dict[str, object]) -> N
             if isinstance(item, dict)
             if (normalized_row := normalize_special_payment_row(item)) is not None
         ] or default_special_payments()
+        payment_changes = loan.get("payment_changes", [])
+        if not isinstance(payment_changes, list):
+            raise ValueError(f"Die Ratenaenderungen fuer Kredit {index + 1} sind ungueltig.")
+        st.session_state[skey(scenario_id, f"payment_changes_data_{index}")] = [
+            normalized_row
+            for item in payment_changes
+            if isinstance(item, dict)
+            if (normalized_row := normalize_payment_change_row(item)) is not None
+        ]
         editor_key = skey(scenario_id, f"specials_editor_{index}")
         if editor_key in st.session_state:
             del st.session_state[editor_key]
+        payment_editor_key = skey(scenario_id, f"payment_changes_editor_{index}")
+        if payment_editor_key in st.session_state:
+            del st.session_state[payment_editor_key]
 
 
 def load_app_state_from_yaml(content: bytes) -> None:
@@ -295,6 +354,7 @@ def fetch_interest_from_api(scenario_id: str, index: int, query: RateQuery) -> N
 
 def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
     specials_data_key = skey(scenario_id, f"specials_data_{index}")
+    payment_changes_data_key = skey(scenario_id, f"payment_changes_data_{index}")
 
     loan_name = st.text_input(
         f"Kreditname {index + 1}",
@@ -438,8 +498,35 @@ def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
         ),
     )
 
+    payment_changes = st.data_editor(
+        st.session_state.get(payment_changes_data_key) or empty_payment_changes_table(),
+        key=skey(scenario_id, f"payment_changes_editor_{index}"),
+        use_container_width=True,
+        num_rows="dynamic",
+        column_config={
+            "monat_ab": st.column_config.NumberColumn("Monat ab", min_value=1, step=1),
+            "rate_eur": st.column_config.NumberColumn("Neue Monatsrate (EUR)", min_value=0.0, step=50.0),
+        },
+    )
+    st.caption("Optional: Ab dem angegebenen Monat gilt die neue Monatsrate fuer alle Folgemonate.")
+    normalized_payment_changes = sorted(
+        [
+            normalized_row
+            for row in extract_special_payments(payment_changes)
+            if (normalized_row := normalize_payment_change_row(row)) is not None
+        ],
+        key=lambda row: int(row["monat_ab"]),
+    )
+    st.session_state[payment_changes_data_key] = normalized_payment_changes
+
+    for normalized_row in normalized_payment_changes:
+        loan.add_payment_change(
+            month=int(normalized_row["monat_ab"]),
+            monthly_payment_amount_eur=Decimal(str(normalized_row["rate_eur"])),
+        )
+
     special_payments = st.data_editor(
-        st.session_state.get(specials_data_key, default_special_payments()),
+        st.session_state.get(specials_data_key) or empty_special_payments_table(),
         key=skey(scenario_id, f"specials_editor_{index}"),
         use_container_width=True,
         num_rows="dynamic",
