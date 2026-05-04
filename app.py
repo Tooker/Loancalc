@@ -16,6 +16,9 @@ from loan_calculator import LoanCalculator, LoanPortfolio
 DEFAULT_SPECIAL_PAYMENTS = [
     {"monat": 12, "betrag_eur": 5000.0, "geschenk": False},
 ]
+DEFAULT_DRAWDOWNS = [
+    {"monat": 1, "prozent": 100.0},
+]
 
 DEFAULT_LOAN_COUNT = 2
 DEFAULT_MAX_MONTHS = 360
@@ -27,6 +30,10 @@ SCENARIOS = {
 
 def default_special_payments() -> list[dict[str, object]]:
     return [row.copy() for row in DEFAULT_SPECIAL_PAYMENTS]
+
+
+def default_drawdowns() -> list[dict[str, object]]:
+    return [row.copy() for row in DEFAULT_DRAWDOWNS]
 
 
 def skey(scenario_id: str, key: str) -> str:
@@ -88,6 +95,18 @@ def normalize_payment_change_row(row: dict[str, object]) -> dict[str, object] | 
     }
 
 
+def normalize_drawdown_row(row: dict[str, object]) -> dict[str, object] | None:
+    month = row.get("monat")
+    percent = row.get("prozent")
+    if not month or percent is None:
+        return None
+
+    return {
+        "monat": int(month),
+        "prozent": float(percent),
+    }
+
+
 def format_duration(months: int) -> str:
     years, remaining_months = divmod(months, 12)
     parts: list[str] = []
@@ -113,6 +132,8 @@ def prepare_combined_schedule_for_display(combined_schedule: pl.DataFrame) -> pl
 
     return schedule_with_ratio.with_columns(
         pl.col("rate_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("auszahlung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("finanzierter_betrag_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("kosten_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("zinsen_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("tilgung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
@@ -127,6 +148,10 @@ def prepare_combined_schedule_for_display(combined_schedule: pl.DataFrame) -> pl
         [
             "monat",
             "jahr",
+            "auszahlung_eur",
+            "abruf_prozent",
+            "abruf_kumuliert_prozent",
+            "finanzierter_betrag_eur",
             "rate_eur",
             "kosten_eur",
             "zinsen_eur",
@@ -173,6 +198,21 @@ def collect_payment_changes_for_state(scenario_id: str, index: int) -> list[dict
     return payment_changes
 
 
+def collect_drawdowns_for_state(scenario_id: str, index: int) -> list[dict[str, object]]:
+    rows = extract_special_payments(
+        st.session_state.get(
+            skey(scenario_id, f"drawdowns_data_{index}"),
+            default_drawdowns(),
+        )
+    )
+    drawdowns: list[dict[str, object]] = []
+    for row in rows:
+        normalized_row = normalize_drawdown_row(row)
+        if normalized_row is not None:
+            drawdowns.append(normalized_row)
+    return drawdowns
+
+
 def empty_payment_changes_table() -> pl.DataFrame:
     return pl.DataFrame(
         schema={
@@ -188,6 +228,15 @@ def empty_special_payments_table() -> pl.DataFrame:
             "monat": pl.Int64,
             "betrag_eur": pl.Float64,
             "geschenk": pl.Boolean,
+        }
+    )
+
+
+def empty_drawdowns_table() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "monat": pl.Int64,
+            "prozent": pl.Float64,
         }
     )
 
@@ -215,9 +264,33 @@ def export_scenario_state(scenario_id: str) -> dict[str, object]:
                     st.session_state.get(skey(scenario_id, f"payment_amount_{index}"), 0.0)
                 ),
                 "interest_only_months": int(st.session_state.get(skey(scenario_id, f"interest_only_{index}"), 0)),
+                "fixed_interest_months": int(st.session_state.get(skey(scenario_id, f"fixed_interest_{index}"), 0)),
                 "annual_special_payment_percent": float(
                     st.session_state.get(skey(scenario_id, f"special_percent_{index}"), 0.0)
                 ),
+                "drawdowns": collect_drawdowns_for_state(scenario_id, index),
+                "follow_up_financing": {
+                    "enabled": bool(st.session_state.get(skey(scenario_id, f"follow_up_enabled_{index}"), False)),
+                    "fixed_interest_months": int(
+                        st.session_state.get(skey(scenario_id, f"follow_up_fixed_interest_{index}"), 120)
+                    ),
+                    "annual_interest_percent": float(
+                        st.session_state.get(skey(scenario_id, f"follow_up_interest_{index}"), 0.0)
+                    ),
+                    "repayment_mode": st.session_state.get(skey(scenario_id, f"follow_up_repayment_mode_{index}"), "Prozent"),
+                    "annual_repayment_percent": float(
+                        st.session_state.get(skey(scenario_id, f"follow_up_repayment_percent_{index}"), 0.0)
+                    ),
+                    "monthly_payment_amount_eur": float(
+                        st.session_state.get(skey(scenario_id, f"follow_up_payment_amount_{index}"), 0.0)
+                    ),
+                    "interest_only_months": int(
+                        st.session_state.get(skey(scenario_id, f"follow_up_interest_only_{index}"), 0)
+                    ),
+                    "annual_special_payment_percent": float(
+                        st.session_state.get(skey(scenario_id, f"follow_up_special_percent_{index}"), 0.0)
+                    ),
+                },
                 "payment_changes": collect_payment_changes_for_state(scenario_id, index),
                 "special_payments": collect_special_payments_for_state(scenario_id, index),
             }
@@ -272,8 +345,35 @@ def load_scenario_state(scenario_id: str, scenario_data: dict[str, object]) -> N
             loan.get("monthly_payment_amount_eur", 0.0)
         )
         st.session_state[skey(scenario_id, f"interest_only_{index}")] = int(loan.get("interest_only_months", 0))
+        st.session_state[skey(scenario_id, f"fixed_interest_{index}")] = int(loan.get("fixed_interest_months", 0))
         st.session_state[skey(scenario_id, f"special_percent_{index}")] = float(
             loan.get("annual_special_payment_percent", 0.0)
+        )
+        follow_up = loan.get("follow_up_financing", {})
+        if not isinstance(follow_up, dict):
+            follow_up = {}
+        follow_up_repayment_mode = str(follow_up.get("repayment_mode", repayment_mode))
+        st.session_state[skey(scenario_id, f"follow_up_enabled_{index}")] = bool(follow_up.get("enabled", False))
+        st.session_state[skey(scenario_id, f"follow_up_fixed_interest_{index}")] = int(
+            follow_up.get("fixed_interest_months", loan.get("fixed_interest_months", 120) or 120)
+        )
+        st.session_state[skey(scenario_id, f"follow_up_interest_{index}")] = float(
+            follow_up.get("annual_interest_percent", loan.get("annual_interest_percent", 0.0))
+        )
+        st.session_state[skey(scenario_id, f"follow_up_repayment_mode_{index}")] = (
+            follow_up_repayment_mode if follow_up_repayment_mode in {"Prozent", "Feste Monatsrate"} else "Prozent"
+        )
+        st.session_state[skey(scenario_id, f"follow_up_repayment_percent_{index}")] = float(
+            follow_up.get("annual_repayment_percent", loan.get("annual_repayment_percent", 0.0))
+        )
+        st.session_state[skey(scenario_id, f"follow_up_payment_amount_{index}")] = float(
+            follow_up.get("monthly_payment_amount_eur", loan.get("monthly_payment_amount_eur", 0.0))
+        )
+        st.session_state[skey(scenario_id, f"follow_up_interest_only_{index}")] = int(
+            follow_up.get("interest_only_months", loan.get("interest_only_months", 0))
+        )
+        st.session_state[skey(scenario_id, f"follow_up_special_percent_{index}")] = float(
+            follow_up.get("annual_special_payment_percent", loan.get("annual_special_payment_percent", 0.0))
         )
         if st.session_state[skey(scenario_id, f"interest_source_{index}")] == "API":
             cached_query = RateQuery(
@@ -314,12 +414,24 @@ def load_scenario_state(scenario_id: str, scenario_data: dict[str, object]) -> N
             if isinstance(item, dict)
             if (normalized_row := normalize_payment_change_row(item)) is not None
         ]
+        drawdowns = loan.get("drawdowns", default_drawdowns())
+        if not isinstance(drawdowns, list):
+            raise ValueError(f"Die Darlehensabrufe fuer Kredit {index + 1} sind ungueltig.")
+        st.session_state[skey(scenario_id, f"drawdowns_data_{index}")] = [
+            normalized_row
+            for item in drawdowns
+            if isinstance(item, dict)
+            if (normalized_row := normalize_drawdown_row(item)) is not None
+        ] or default_drawdowns()
         editor_key = skey(scenario_id, f"specials_editor_{index}")
         if editor_key in st.session_state:
             del st.session_state[editor_key]
         payment_editor_key = skey(scenario_id, f"payment_changes_editor_{index}")
         if payment_editor_key in st.session_state:
             del st.session_state[payment_editor_key]
+        drawdown_editor_key = skey(scenario_id, f"drawdowns_editor_{index}")
+        if drawdown_editor_key in st.session_state:
+            del st.session_state[drawdown_editor_key]
 
 
 def load_app_state_from_yaml(content: bytes) -> None:
@@ -353,6 +465,7 @@ def fetch_interest_from_api(scenario_id: str, index: int, query: RateQuery) -> N
 
 
 def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
+    drawdowns_data_key = skey(scenario_id, f"drawdowns_data_{index}")
     specials_data_key = skey(scenario_id, f"specials_data_{index}")
     payment_changes_data_key = skey(scenario_id, f"payment_changes_data_{index}")
 
@@ -367,6 +480,13 @@ def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
         value=250000.0 if index == 0 else 100000.0,
         step=1000.0,
         key=skey(scenario_id, f"principal_{index}"),
+    )
+    fixed_interest_months = st.number_input(
+        f"Festzinszeit {index + 1} (Monate, 0 = bis Volltilgung)",
+        min_value=0,
+        value=120,
+        step=12,
+        key=skey(scenario_id, f"fixed_interest_{index}"),
     )
 
     repayment_mode = st.radio(
@@ -476,27 +596,153 @@ def build_loan_from_inputs(scenario_id: str, index: int) -> LoanCalculator:
 
         annual_interest_percent = float(cached_interest)
 
+    follow_up_enabled_key = skey(scenario_id, f"follow_up_enabled_{index}")
+    follow_up_fixed_interest_key = skey(scenario_id, f"follow_up_fixed_interest_{index}")
+    follow_up_interest_key = skey(scenario_id, f"follow_up_interest_{index}")
+    follow_up_repayment_mode_key = skey(scenario_id, f"follow_up_repayment_mode_{index}")
+    follow_up_repayment_percent_key = skey(scenario_id, f"follow_up_repayment_percent_{index}")
+    follow_up_payment_amount_key = skey(scenario_id, f"follow_up_payment_amount_{index}")
+    follow_up_interest_only_key = skey(scenario_id, f"follow_up_interest_only_{index}")
+    follow_up_special_percent_key = skey(scenario_id, f"follow_up_special_percent_{index}")
+    st.session_state.setdefault(follow_up_fixed_interest_key, int(fixed_interest_months) or 120)
+    st.session_state.setdefault(follow_up_interest_key, float(annual_interest_percent))
+    st.session_state.setdefault(follow_up_repayment_mode_key, repayment_mode)
+    st.session_state.setdefault(follow_up_repayment_percent_key, float(annual_repayment_percent))
+    st.session_state.setdefault(follow_up_payment_amount_key, float(monthly_payment_amount_eur))
+
+    interest_only_months = st.number_input(
+        f"Tilgungsfreie Monate {index + 1}",
+        min_value=0,
+        value=0,
+        step=1,
+        key=skey(scenario_id, f"interest_only_{index}"),
+    )
+    annual_special_payment_percent = st.number_input(
+        f"Erlaubte Sonderzahlung {index + 1} (% p.a.)",
+        min_value=0.0,
+        value=5.0,
+        step=0.5,
+        key=skey(scenario_id, f"special_percent_{index}"),
+    )
+    st.session_state.setdefault(follow_up_interest_only_key, int(interest_only_months))
+    st.session_state.setdefault(follow_up_special_percent_key, float(annual_special_payment_percent))
+
+    with st.expander(f"Darlehensabruf {index + 1}", expanded=False):
+        drawdowns = st.data_editor(
+            st.session_state.get(drawdowns_data_key) or default_drawdowns(),
+            key=skey(scenario_id, f"drawdowns_editor_{index}"),
+            use_container_width=True,
+            num_rows="dynamic",
+            column_config={
+                "monat": st.column_config.NumberColumn("Monat", min_value=1, step=1),
+                "prozent": st.column_config.NumberColumn("Abruf (%)", min_value=0.0, max_value=100.0, step=1.0),
+            },
+        )
+        normalized_drawdowns = sorted(
+            [
+                normalized_row
+                for row in extract_special_payments(drawdowns)
+                if (normalized_row := normalize_drawdown_row(row)) is not None
+            ],
+            key=lambda row: int(row["monat"]),
+        )
+        st.session_state[drawdowns_data_key] = normalized_drawdowns
+        cumulative_percent = 0.0
+        drawdown_summary: list[dict[str, object]] = []
+        for normalized_row in normalized_drawdowns:
+            cumulative_percent += float(normalized_row["prozent"])
+            drawdown_summary.append(
+                {
+                    "monat": int(normalized_row["monat"]),
+                    "abruf_prozent": f"{float(normalized_row['prozent']):.2f} %",
+                    "auszahlung": format_euro(principal_eur * float(normalized_row["prozent"]) / 100),
+                    "kumuliert_prozent": f"{cumulative_percent:.2f} %",
+                    "kumuliert_betrag": format_euro(principal_eur * cumulative_percent / 100),
+                }
+            )
+        if drawdown_summary:
+            st.dataframe(pl.DataFrame(drawdown_summary), use_container_width=True, hide_index=True)
+        st.caption("Die Prozentwerte sind einzelne Tranchen. Zusammen duerfen sie hoechstens 100 % ergeben.")
+
+    with st.expander(f"Anschlussfinanzierung {index + 1}", expanded=False):
+        follow_up_enabled = st.checkbox(
+            "Restschuld automatisch weiterfinanzieren",
+            key=follow_up_enabled_key,
+        )
+        follow_up_repayment_mode = st.radio(
+            f"Tilgungsmodus Anschluss {index + 1}",
+            options=["Prozent", "Feste Monatsrate"],
+            horizontal=True,
+            key=follow_up_repayment_mode_key,
+        )
+        follow_up_annual_repayment_percent = 0.0
+        follow_up_monthly_payment_amount_eur = 0.0
+        if follow_up_repayment_mode == "Prozent":
+            follow_up_annual_repayment_percent = st.number_input(
+                f"Anschlusstilgung {index + 1} (% p.a.)",
+                min_value=0.0,
+                step=0.1,
+                key=follow_up_repayment_percent_key,
+            )
+        else:
+            follow_up_monthly_payment_amount_eur = st.number_input(
+                f"Anschluss-Monatsrate {index + 1} gesamt (EUR)",
+                min_value=0.0,
+                step=50.0,
+                key=follow_up_payment_amount_key,
+            )
+        follow_up_annual_interest_percent = st.number_input(
+            f"Anschlusszins {index + 1} (% p.a.)",
+            min_value=0.0,
+            step=0.1,
+            key=follow_up_interest_key,
+        )
+        follow_up_fixed_interest_months = st.number_input(
+            f"Festzinszeit Anschluss {index + 1} (Monate)",
+            min_value=1,
+            value=120,
+            step=12,
+            key=follow_up_fixed_interest_key,
+        )
+        follow_up_interest_only_months = st.number_input(
+            f"Tilgungsfreie Monate Anschluss {index + 1}",
+            min_value=0,
+            value=0,
+            step=1,
+            key=follow_up_interest_only_key,
+        )
+        follow_up_annual_special_payment_percent = st.number_input(
+            f"Erlaubte Sonderzahlung Anschluss {index + 1} (% p.a.)",
+            min_value=0.0,
+            value=5.0,
+            step=0.5,
+            key=follow_up_special_percent_key,
+        )
+        st.caption("Die Restschuld wird fuer jede neue Runde auf volle 1.000 EUR aufgerundet.")
+
     loan = LoanCalculator(
         name=loan_name,
         principal_eur=principal_eur,
         annual_interest_percent=annual_interest_percent,
         annual_repayment_percent=annual_repayment_percent,
         monthly_payment_amount_eur=monthly_payment_amount_eur,
-        interest_only_months=st.number_input(
-            f"Tilgungsfreie Monate {index + 1}",
-            min_value=0,
-            value=0,
-            step=1,
-            key=skey(scenario_id, f"interest_only_{index}"),
-        ),
-        annual_special_payment_percent=st.number_input(
-            f"Erlaubte Sonderzahlung {index + 1} (% p.a.)",
-            min_value=0.0,
-            value=5.0,
-            step=0.5,
-            key=skey(scenario_id, f"special_percent_{index}"),
-        ),
+        interest_only_months=interest_only_months,
+        fixed_interest_months=fixed_interest_months,
+        annual_special_payment_percent=annual_special_payment_percent,
+        follow_up_enabled=follow_up_enabled,
+        follow_up_annual_interest_percent=follow_up_annual_interest_percent,
+        follow_up_annual_repayment_percent=follow_up_annual_repayment_percent,
+        follow_up_monthly_payment_amount_eur=follow_up_monthly_payment_amount_eur,
+        follow_up_interest_only_months=follow_up_interest_only_months,
+        follow_up_fixed_interest_months=follow_up_fixed_interest_months,
+        follow_up_annual_special_payment_percent=follow_up_annual_special_payment_percent,
     )
+
+    for normalized_row in normalized_drawdowns:
+        loan.add_drawdown(
+            month=int(normalized_row["monat"]),
+            percent=Decimal(str(normalized_row["prozent"])),
+        )
 
     payment_changes = st.data_editor(
         st.session_state.get(payment_changes_data_key) or empty_payment_changes_table(),
@@ -572,6 +818,9 @@ def build_restschuld_chart(detailed_schedule: pl.DataFrame, combined_schedule: p
     special_payment_data = detailed_schedule.filter(pl.col("sonderzahlung_eur") > 0).select(
         ["kredit", "monat", "restschuld_eur", "sonderzahlung_eur"]
     )
+    drawdown_data = detailed_schedule.filter(pl.col("auszahlung_eur") > 0).select(
+        ["kredit", "runde", "monat", "auszahlung_eur", "abruf_kumuliert_prozent", "restschuld_eur"]
+    )
 
     debt_chart = (
         alt.Chart(chart_data.to_pandas())
@@ -598,8 +847,28 @@ def build_restschuld_chart(detailed_schedule: pl.DataFrame, combined_schedule: p
         )
     )
 
+    layers = [debt_chart, burden_chart]
+
+    if not drawdown_data.is_empty():
+        drawdown_chart = (
+            alt.Chart(drawdown_data.to_pandas())
+            .mark_point(size=120, filled=True, shape="square", color="#16a34a")
+            .encode(
+                x=alt.X("monat:Q"),
+                y=alt.Y("restschuld_eur:Q"),
+                tooltip=[
+                    "kredit:N",
+                    "runde:Q",
+                    "monat:Q",
+                    alt.Tooltip("auszahlung_eur:Q", title="Auszahlung", format=",.2f"),
+                    alt.Tooltip("abruf_kumuliert_prozent:Q", title="Abruf kumuliert %", format=".2f"),
+                ],
+            )
+        )
+        layers.append(drawdown_chart)
+
     if special_payment_data.is_empty():
-        return alt.layer(debt_chart, burden_chart).resolve_scale(y="independent")
+        return alt.layer(*layers).resolve_scale(y="independent")
 
     marker_chart = (
         alt.Chart(special_payment_data.to_pandas())
@@ -617,7 +886,8 @@ def build_restschuld_chart(detailed_schedule: pl.DataFrame, combined_schedule: p
         )
     )
 
-    return alt.layer(debt_chart, burden_chart, marker_chart).resolve_scale(y="independent")
+    layers.append(marker_chart)
+    return alt.layer(*layers).resolve_scale(y="independent")
 
 
 def build_monthly_burden_table(combined_schedule: pl.DataFrame) -> pl.DataFrame:
@@ -718,6 +988,7 @@ def build_yearly_aggregation(combined_schedule: pl.DataFrame) -> pl.DataFrame:
         .group_by("jahr")
         .agg(
             pl.col("kosten_eur").sum().alias("kosten_eur"),
+            pl.col("auszahlung_eur").sum().alias("auszahlung_eur"),
             pl.col("zinsen_eur").sum().alias("zinsen_eur"),
             pl.col("tilgung_eur").sum().alias("tilgung_eur"),
             pl.col("sonderzahlung_eur").sum().alias("sonderzahlung_eur"),
@@ -787,6 +1058,7 @@ def build_yearly_aggregation_chart(yearly_aggregation: pl.DataFrame) -> alt.Char
 def prepare_yearly_aggregation_for_display(yearly_aggregation: pl.DataFrame) -> pl.DataFrame:
     return yearly_aggregation.with_columns(
         pl.col("rate_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("auszahlung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("kosten_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("zinsen_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("tilgung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
@@ -800,6 +1072,8 @@ def prepare_yearly_aggregation_for_display(yearly_aggregation: pl.DataFrame) -> 
 def prepare_detailed_schedule_for_display(detailed_schedule: pl.DataFrame) -> pl.DataFrame:
     return detailed_schedule.with_columns(
         pl.col("rate_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("auszahlung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
+        pl.col("finanzierter_betrag_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("kosten_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("zinsen_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
         pl.col("tilgung_eur").map_elements(lambda value: format_euro(float(value)), return_dtype=pl.String),
@@ -929,6 +1203,7 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
     last_row = sorted_schedule.tail(1)
     restschuld_total = float(last_row["restschuld_eur"].item())
     laufzeit_total = int(combined_schedule["monat"].max())
+    runden_total = int(detailed_schedule["runde"].max()) if "runde" in detailed_schedule.columns else 1
     zinsen_total = float(combined_schedule["zinsen_eur"].sum())
     monatliche_belastung = float(first_row["rate_eur"].item())
     kumulierte_gesamtkosten = float(combined_schedule["kosten_eur"].sum())
@@ -941,6 +1216,7 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
                 "Restschuld gesamt",
                 "Monatliche Belastung",
                 "Laufzeit im Modell",
+                "Finanzierungsrunden",
                 "Zinsen gesamt",
                 "Kumulierte Gesamtkosten",
                 "Mittlere Belastung",
@@ -949,6 +1225,7 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
                 f"{restschuld_total:,.2f} EUR",
                 f"{monatliche_belastung:,.2f} EUR",
                 format_duration(laufzeit_total),
+                str(runden_total),
                 f"{zinsen_total:,.2f} EUR",
                 f"{kumulierte_gesamtkosten:,.2f} EUR",
                 f"{durchschnittliche_belastung:,.2f} EUR",
@@ -987,6 +1264,7 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
         column_config={
             "jahr": st.column_config.NumberColumn("Jahr"),
             "rate_eur": "Jahresrate",
+            "auszahlung_eur": "Auszahlung",
             "kosten_eur": "Gesamtkosten",
             "zinsen_eur": "Zinsen",
             "tilgung_eur": "Tilgung",
@@ -1006,6 +1284,10 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
                 column_config={
                     "monat": st.column_config.NumberColumn("Monat"),
                     "jahr": st.column_config.NumberColumn("Jahr"),
+                    "auszahlung_eur": "Auszahlung",
+                    "abruf_prozent": st.column_config.NumberColumn("Abruf %", format="%.2f"),
+                    "abruf_kumuliert_prozent": st.column_config.NumberColumn("Abruf kumuliert %", format="%.2f"),
+                    "finanzierter_betrag_eur": "Finanzierter Betrag",
                     "rate_eur": "Rate",
                     "kosten_eur": "Gesamtkosten",
                     "zinsen_eur": "Zinsen",
@@ -1024,8 +1306,14 @@ def render_scenario_tab(scenario_id: str, scenario_label: str) -> dict[str, pl.D
                 hide_index=True,
                 column_config={
                     "kredit": "Kredit",
+                    "runde": st.column_config.NumberColumn("Runde"),
                     "monat": st.column_config.NumberColumn("Monat"),
+                    "monat_in_runde": st.column_config.NumberColumn("Monat in Runde"),
                     "jahr": st.column_config.NumberColumn("Jahr"),
+                    "auszahlung_eur": "Auszahlung",
+                    "abruf_prozent": st.column_config.NumberColumn("Abruf %", format="%.2f"),
+                    "abruf_kumuliert_prozent": st.column_config.NumberColumn("Abruf kumuliert %", format="%.2f"),
+                    "finanzierter_betrag_eur": "Finanzierter Betrag",
                     "rate_eur": "Rate",
                     "kosten_eur": "Gesamtkosten",
                     "zinsen_eur": "Zinsen",
