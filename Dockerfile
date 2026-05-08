@@ -8,6 +8,6 @@ ENV UV_LINK_MODE=copy
 COPY . .
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8501
+EXPOSE 8502
 
-CMD ["uv", "run", "streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+CMD ["uv", "run", "streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8502", "--server.headless=true"]
